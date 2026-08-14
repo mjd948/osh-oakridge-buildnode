@@ -64,8 +64,17 @@ echo "Waiting for PostGIS (PostgreSQL) to be ready..."
 RETRY_COUNT=0
 export PGPASSWORD=postgres  # Needed for pg_isready with password
 
+# Bounded wait. This loop declared RETRY_MAX but never incremented or checked it, so a
+# database that never came up left the script — and the systemd unit wrapping it —
+# waiting forever while reporting success.
 until docker exec "$CONTAINER_NAME" pg_isready -U "$DB_USER" -d "$DB_NAME" > /dev/null 2>&1; do
-  echo "PostGIS not ready yet, retrying..."
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  if [ "$RETRY_COUNT" -ge "$RETRY_MAX" ]; then
+    echo "Error: PostGIS did not become ready after $((RETRY_MAX * RETRY_INTERVAL))s. Last container logs:"
+    docker logs --tail 30 "$CONTAINER_NAME" 2>&1 || true
+    exit 1
+  fi
+  echo "PostGIS not ready yet, retrying (${RETRY_COUNT}/${RETRY_MAX})..."
   sleep "${RETRY_INTERVAL}"
 done
 

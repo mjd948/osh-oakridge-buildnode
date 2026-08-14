@@ -51,6 +51,9 @@ dependencies {
     implementation project(':sensorhub-service-bucket')
 
     implementation project(':security-utils')
+    // Install-time and service-time bootstrap tool. Lands in lib/ alongside the node
+    // and is launched with the same -cp "lib/*", so it shares the PostgreSQL driver.
+    implementation project(':oscarctl')
 
     implementation 'io.sentry:sentry-logback:8.25.0'
 
@@ -65,6 +68,87 @@ configurations {
     stable
 }
 
+// The release version is maintained in four places that have historically drifted:
+// this file, the deploymentName in the node config, and two package.json files. CI
+// validates the first two against the git tag and ignores the others, which is how
+// the viewer's package.json came to sit at 3.0.0-alpha while shipping as 3.5.0.
+//
+//   ./gradlew syncVersions   rewrite them all from project.version
+//   ./gradlew checkVersions  fail if any disagrees (wired into the release workflow)
+def versionedFiles = [
+    [path: 'electron/package.json',
+     pattern: /("version"\s*:\s*")[^"]*(")/],
+    [path: 'web/oscar-viewer/package.json',
+     pattern: /("version"\s*:\s*")[^"]*(")/],
+    [path: 'dist/config/standard/config.json',
+     pattern: /("deploymentName"\s*:\s*"OSCAR )[^"]*(")/],
+]
+
+tasks.register('syncVersions') {
+    group = 'versioning'
+    description = 'Rewrites every version-bearing file from project.version.'
+    doLast {
+        versionedFiles.each { spec ->
+            def f = file(spec.path)
+            if (!f.exists()) {
+                logger.warn("syncVersions: ${spec.path} not found, skipping")
+                return
+            }
+            def text = f.text
+            def updated = text.replaceFirst(spec.pattern, "\$1${project.version}\$2")
+            if (text == updated) {
+                logger.lifecycle("  ${spec.path} already at ${project.version}")
+            } else {
+                f.text = updated
+                logger.lifecycle("  ${spec.path} -> ${project.version}")
+            }
+        }
+    }
+}
+
+tasks.register('checkVersions') {
+    group = 'versioning'
+    description = 'Fails if any version-bearing file disagrees with project.version.'
+    doLast {
+        def problems = []
+        versionedFiles.each { spec ->
+            def f = file(spec.path)
+            if (!f.exists()) {
+                problems << "${spec.path} is missing"
+                return
+            }
+            def m = (f.text =~ spec.pattern)
+            if (!m) {
+                problems << "${spec.path} has no recognisable version field"
+            } else {
+                def found = m[0][0].replaceFirst(spec.pattern, '$1').with { it }
+                // Extract just the value between the captured delimiters.
+                def value = (m[0][0] =~ /"[^"]*"\s*:\s*"(.*)"/)[0][1]
+                value = value.replaceFirst(/^OSCAR /, '')
+                if (value != project.version.toString())
+                    problems << "${spec.path} is ${value}, expected ${project.version}"
+            }
+        }
+        if (problems) {
+            throw new GradleException("Version mismatch:\n  " + problems.join("\n  ") +
+                "\nRun ./gradlew syncVersions")
+        }
+        logger.lifecycle("All version-bearing files agree on ${project.version}")
+    }
+}
+
+// JavaCPP resolves ffmpeg through a -platform artifact, which drags in every platform
+// it supports: seven ffmpeg builds totalling ~161 MB plus javacpp variants for ios,
+// android and ppc64le. Filtering at packaging time rather than changing the dependency
+// keeps the resolved graph identical across platforms - the Windows and Linux artifacts
+// are then provably the same code with a different native slice.
+ext.LINUX_X64_NATIVE_EXCLUDES = [
+    'ffmpeg-*-windows-*.jar', 'ffmpeg-*-macosx-*.jar', 'ffmpeg-*-android-*.jar',
+    'ffmpeg-*-linux-arm64.jar', 'ffmpeg-*-linux-ppc64le.jar',
+    'javacpp-*-windows-*.jar', 'javacpp-*-macosx-*.jar', 'javacpp-*-android-*.jar',
+    'javacpp-*-ios-*.jar', 'javacpp-*-linux-arm64.jar', 'javacpp-*-linux-ppc64le.jar',
+]
+
 distributions{
     rel {
         distributionBaseName = 'oscar'
@@ -78,7 +162,7 @@ distributions{
                 from 'dist/config/eml'
             }
             into("osh-node-oscar/trusted_certificates") {
-                from 'scripts/trusted_certificates'
+                from 'dist/scripts/trusted_certificates'
             }
             into("osh-node-oscar/rules") {
                 from 'dist/rules'
@@ -94,7 +178,7 @@ distributions{
             }
             into("osh-node-oscar/") {
                 from 'README.md'
-                from 'osh-node-oscar/changelog.md'
+                from 'changelog.md'
             }
             into("osh-node-oscar/lib") {
                 from 'third-party-drivers'
@@ -105,6 +189,200 @@ distributions{
                 from('dist/release')
             }
 
+        }
+    }
+
+    // Self-contained Linux x64 install: node, embedded PostgreSQL/PostGIS, viewer and
+    // systemd units. Needs no Docker, no system PostgreSQL and no separate Java.
+    //
+    // The embedded database is a build input, produced by
+    // packaging/postgres-dist/make-bundle.sh. It is deliberately not in git: it is
+    // ~125 MB of third-party binaries with their own licences.
+    linuxX64 {
+        distributionBaseName = 'oscar-linux-x64'
+        contents {
+            into('.') {
+                from 'packaging/linux'
+                exclude 'bin/**'          // staged separately so it can be made executable
+                exclude '*.service'       // collected under systemd/ below
+                exclude '*.target'
+            }
+            into('bin') {
+                from('packaging/linux/bin') {
+                    fileMode = 0755
+                }
+            }
+            into('systemd') {
+                from('packaging/linux') {
+                    include '*.service'
+                    include '*.target'
+                }
+            }
+            into('.') {
+                from 'dist/config/standard'   // config.json template, logback.xml
+                from 'dist/scripts/standard'
+                exclude 'launch.*', 'set-initial-admin-password.*', '.s'
+            }
+            into('config') { from 'dist/config/eml' }
+            into('trusted_certificates') { from 'dist/scripts/trusted_certificates' }
+            into('rules') { from 'dist/rules' }
+            into('documentation') { from 'dist/documentation' }
+            into('web') { from 'web/oscar-viewer/web' }
+            into('models/ocr') { from 'dist/models/ocr' }
+            into('lib') {
+                from 'third-party-drivers'
+                from(project.configurations.runtimeClasspath) {
+                    exclude LINUX_X64_NATIVE_EXCLUDES
+                }
+            }
+            into('pgsql') {
+                from('packaging/postgres-dist/out/pgsql') {
+                    // Restore the executable bit that the archive round-trip drops.
+                    include '**'
+                }
+            }
+            into('.') {
+                from 'README.md'
+                from 'changelog.md'
+                // install.sh reads this to name the versioned program directory, and
+                // oscarctl sync-web compares it against the marker in the data dir to
+                // decide whether the static content needs refreshing after an upgrade.
+                from(resources.text.fromString(project.version + "\n").asFile()) {
+                    rename '.*', 'VERSION'
+                }
+            }
+        }
+    }
+}
+
+ext.WIN_X64_NATIVE_EXCLUDES = [
+    'ffmpeg-*-linux-*.jar', 'ffmpeg-*-macosx-*.jar', 'ffmpeg-*-android-*.jar',
+    'javacpp-*-linux-*.jar', 'javacpp-*-macosx-*.jar', 'javacpp-*-android-*.jar',
+    'javacpp-*-ios-*.jar',
+]
+
+// Staged tree that Inno Setup compiles into OSCARSetup-<version>-x64.exe.
+//
+// Produced with `./gradlew installWinX64Dist`, which stages to build/install/winX64
+// without archiving - ISCC wants a directory, and re-zipping ~800 MB only to have the
+// installer unpack it again would be pure waste.
+//
+// Prerequisites, both of which live outside git because they are third-party binaries:
+//   packaging/windows/vendor/         ./fetch-vendor.sh
+//   packaging/windows/staging/pgsql/  ./make-pgsql.sh
+distributions {
+    winX64 {
+        distributionBaseName = 'oscar-win-x64'
+        contents {
+            into('lib') {
+                from 'third-party-drivers'
+                from(project.configurations.runtimeClasspath) {
+                    exclude WIN_X64_NATIVE_EXCLUDES
+                }
+            }
+            into('pgsql') { from 'packaging/windows/staging/pgsql' }
+            into('bin') { from 'packaging/windows/bin' }
+            into('.') {
+                from 'packaging/windows/oscar-node.service.xml'
+                from('packaging/windows/vendor/winsw-x64.exe') { rename '.*', 'winsw.exe' }
+            }
+            // The archive nests everything under jdk-<version>-jre/; strip that so the
+            // launchers can rely on a stable {app}\jre\bin\java.exe.
+            //
+            // Rewriting eachFile.path sets the destination relative to the *spec root*,
+            // not to an enclosing into(), so the target prefix is applied here rather
+            // than by wrapping this in into('jre').
+            into('.') {
+                from(zipTree('packaging/windows/vendor/jre-win-x64.zip')) {
+                    eachFile { it.path = 'jre/' + it.path.replaceFirst(/^[^\/]+\//, '') }
+                    includeEmptyDirs = false
+                    // The Temurin archive stores modes such as 0770 and 0760, with no
+                    // world-read bit. Those are meaningless for Windows binaries, but
+                    // the Inno Setup compiler runs under wine, which maps them to a
+                    // denial and aborts with "Access denied" partway through packing.
+                    fileMode = 0755
+                    dirMode = 0755
+                }
+            }
+            into('.') {
+                from 'dist/config/standard'
+                from 'dist/scripts/standard'
+                exclude 'launch.*', 'set-initial-admin-password.*', 'load_trusted_certs.*', '.s'
+            }
+            into('config') { from 'dist/config/eml' }
+            into('rules') { from 'dist/rules' }
+            into('documentation') { from 'dist/documentation' }
+            into('web') { from 'web/oscar-viewer/web' }
+            into('models/ocr') { from 'dist/models/ocr' }
+            into('licenses') {
+                from 'LICENSE'
+                rename 'LICENSE', 'LICENSE.txt'
+                // PostGIS is GPLv2 and GEOS is LGPL 2.1; both are reached over a socket
+                // as separate programs, but their licences must ship with the binaries.
+                from('packaging/windows/staging/pgsql') {
+                    include 'POSTGIS-LICENSE'
+                }
+            }
+            into('.') {
+                from 'README.md'
+                from 'changelog.md'
+                from(resources.text.fromString(project.version + "\n").asFile()) {
+                    rename '.*', 'VERSION'
+                }
+            }
+        }
+    }
+}
+
+// distZip cannot record symlinks, and its unix-permission extra field is dropped by
+// several common extractors - which would strip the executable bit from every binary
+// in pgsql/bin and bin/. Linux therefore ships as a tarball.
+//
+// common.gradle disables every *istTar task from a root-project afterEvaluate, and it
+// wins ordering because it is applied on line 1 of this file. projectsEvaluated is
+// guaranteed to run after all afterEvaluate callbacks, so this re-enable sticks.
+gradle.projectsEvaluated {
+    tasks.named('linuxX64DistTar') {
+        enabled = true
+        compression = Compression.GZIP
+        archiveExtension = 'tar.gz'
+    }
+    tasks.named('linuxX64DistZip') {
+        enabled = false
+    }
+}
+
+// Gradle's CopySpec silently ignores `from` paths that don't exist. That is how
+// trusted_certificates/ and changelog.md were absent from every release despite being
+// declared above. Fail the build instead of shipping a quietly incomplete archive.
+def REQUIRED_DIST_SOURCES = [
+    'dist/scripts/standard',
+    'dist/scripts/trusted_certificates',
+    'dist/config/standard',
+    'dist/config/eml',
+    'dist/rules',
+    'dist/documentation',
+    'dist/models/ocr',
+    'dist/release',
+    'third-party-drivers',
+    'README.md',
+    'changelog.md',
+]
+
+// Produced by `npm run build` in web/oscar-viewer; absent on a bare `./gradlew build`.
+// Warn rather than fail so a Java-only build still works locally.
+def GENERATED_DIST_SOURCES = ['web/oscar-viewer/web']
+
+tasks.named('relDistZip') {
+    doFirst {
+        def missing = REQUIRED_DIST_SOURCES.findAll { !file(it).exists() }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                "Distribution sources are missing and would be silently skipped: ${missing.join(', ')}")
+        }
+        GENERATED_DIST_SOURCES.findAll { !file(it).exists() }.each {
+            logger.warn("WARNING: '${it}' is missing - the distribution will contain no web UI. " +
+                        "Run 'npm run build' in web/oscar-viewer first.")
         }
     }
 }

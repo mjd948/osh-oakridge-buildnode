@@ -1,10 +1,10 @@
 [submodule "include/osh-oakridge-modules"]
 	path = include/osh-oakridge-modules
-	url = git@github.com:mjd948/osh-oakridge-modules.git
+	url = https://github.com/mjd948/osh-oakridge-modules.git
 	branch = main
 [submodule "include/osh-core"]
 	path = include/osh-core
-	url = git@github.com:mjd948/osh-core.git
+	url = https://github.com/mjd948/osh-core.git
 	branch = feature/mobile-detector-config
 [submodule "include/osh-addons"]
 	path = include/osh-addons
@@ -12,5 +12,5 @@
 	branch = OSCAR
 [submodule "web/oscar-viewer"]
 	path = web/oscar-viewer
-	url = git@github.com:mjd948/oscar-viewer.git
+	url = https://github.com/mjd948/oscar-viewer.git
 	branch = main
