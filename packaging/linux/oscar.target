@@ -1,0 +1,11 @@
+[Unit]
+Description=OSCAR (database and node)
+# Gives operators a single handle for the whole system:
+#   systemctl start oscar.target    - brings up the database, then the node
+#   systemctl stop oscar.target     - stops the node, then the database
+# while still allowing either unit to be restarted on its own.
+Requires=oscar-postgres.service oscar-node.service
+After=oscar-postgres.service oscar-node.service
+
+[Install]
+WantedBy=multi-user.target

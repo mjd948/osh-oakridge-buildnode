@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Launcher for the OSCAR control tool.
+#
+# The classpath wildcard must reach the JVM literally - if the shell expands it,
+# java receives a list of arguments instead of a classpath and fails with a
+# confusing "could not find or load main class <first jar>". Hence the quoting.
+#
+set -eu
+
+OSCAR_HOME="${OSCAR_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+export OSCAR_HOME
+
+# Prefer an explicitly configured runtime, then the JRE shipped with the install,
+# then whatever is on PATH so this still works before the bundled runtime is in place.
+JAVA="${OSCAR_JAVA:-}"
+[ -n "$JAVA" ] && [ -x "$JAVA" ] || JAVA="$OSCAR_HOME/jre/bin/java"
+[ -x "$JAVA" ] || JAVA="$(command -v java || true)"
+[ -n "$JAVA" ] && [ -x "$JAVA" ] || {
+    echo "No Java runtime found. Set OSCAR_JAVA, install to $OSCAR_HOME/jre, or put java on PATH." >&2
+    exit 1
+}
+
+# logback is on the classpath because oscarctl shares the node's lib/. Silence its
+# auto-configuration status report, which otherwise buries this tool's own output.
+exec "$JAVA" \
+    -Dlogback.statusListenerClass=ch.qos.logback.core.status.NopStatusListener \
+    -cp "$OSCAR_HOME/lib/*" com.botts.oscar.ctl.OscarCtl "$@"

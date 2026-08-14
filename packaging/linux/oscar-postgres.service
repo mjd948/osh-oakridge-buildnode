@@ -1,0 +1,52 @@
+[Unit]
+Description=OSCAR embedded PostgreSQL/PostGIS
+Documentation=file:/opt/oscar/current/documentation
+After=network.target
+# Deliberately independent of oscar-node: the node restarting must not cycle the
+# database. On a site whose cluster has grown to production size, evicting its page
+# cache for a fault that has nothing to do with the database is expensive.
+PartOf=oscar.target
+
+[Service]
+Type=forking
+User=oscar
+Group=oscar
+
+Environment=OSCAR_HOME=/opt/oscar/current
+Environment=OSCAR_CONFIG=/etc/oscar
+Environment=OSCAR_DATA=/var/lib/oscar
+EnvironmentFile=-/etc/oscar/oscar.env
+
+PIDFile=/var/lib/oscar/pgdata/postmaster.pid
+
+# Creates the cluster on first boot and refreshes OSCAR's managed configuration.
+# Idempotent, and refuses to touch a cluster from a different major version.
+ExecStartPre=/opt/oscar/current/bin/oscarctl init-db
+
+# -w makes pg_ctl return only once the postmaster is accepting connections, and -t
+# bounds the wait. This replaces the old unbounded pg_isready poll loop, which left
+# a broken database reporting "started" forever.
+ExecStart=/opt/oscar/current/pgsql/usr/lib/postgresql/16/bin/pg_ctl \
+    -D /var/lib/oscar/pgdata -w -t 300 start
+ExecStop=/opt/oscar/current/pgsql/usr/lib/postgresql/16/bin/pg_ctl \
+    -D /var/lib/oscar/pgdata -m fast -w -t 300 stop
+ExecReload=/opt/oscar/current/pgsql/usr/lib/postgresql/16/bin/pg_ctl \
+    -D /var/lib/oscar/pgdata reload
+
+# Mandatory. The default (control-group) sends SIGTERM to backend processes directly,
+# which the postmaster interprets as a backend crash and answers with a full recovery
+# cycle on every single stop.
+KillMode=mixed
+TimeoutStopSec=310
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/oscar /var/log/oscar
+
+[Install]
+WantedBy=multi-user.target

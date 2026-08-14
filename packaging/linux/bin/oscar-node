@@ -1,0 +1,77 @@
+#!/bin/bash
+#
+# Launcher for the OSCAR node, used by oscar-node.service.
+#
+# Everything OSH reads at runtime - config.json, db/, .moduledata/, files/, web/,
+# models/ - is resolved relative to the current working directory, so this script's
+# main job is to run the JVM from the data directory rather than the program one.
+#
+set -eu
+
+OSCAR_HOME="${OSCAR_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+OSCAR_CONFIG="${OSCAR_CONFIG:-/etc/oscar}"
+OSCAR_DATA="${OSCAR_DATA:-/var/lib/oscar}"
+NODE_DIR="$OSCAR_DATA/node"
+LOG_DIR="${OSCAR_LOG_DIR:-/var/log/oscar}"
+
+[ -f "$OSCAR_CONFIG/oscar.env" ] && . "$OSCAR_CONFIG/oscar.env"
+
+JAVA="${OSCAR_JAVA:-}"
+[ -n "$JAVA" ] && [ -x "$JAVA" ] || JAVA="$OSCAR_HOME/jre/bin/java"
+[ -x "$JAVA" ] || JAVA="$(command -v java || true)"
+[ -n "$JAVA" ] && [ -x "$JAVA" ] || {
+    echo "No Java runtime found. Set OSCAR_JAVA, install to $OSCAR_HOME/jre, or put java on PATH." >&2
+    exit 1
+}
+
+mkdir -p "$LOG_DIR" "$NODE_DIR"
+
+# SensorHubWrapper reads these and sets the corresponding javax.net.ssl.* properties
+# itself, which keeps the store passwords out of the process command line.
+export KEYSTORE="${KEYSTORE:-$NODE_DIR/osh-keystore.p12}"
+export KEYSTORE_TYPE="${KEYSTORE_TYPE:-PKCS12}"
+export KEYSTORE_PASSWORD="${KEYSTORE_PASSWORD:-atakatak}"
+export TRUSTSTORE="${TRUSTSTORE:-$NODE_DIR/trustStore.jks}"
+export TRUSTSTORE_TYPE="${TRUSTSTORE_TYPE:-JKS}"
+export TRUSTSTORE_PASSWORD="${TRUSTSTORE_PASSWORD:-changeit}"
+
+# Heap sized from the memory this machine will actually give us. A JVM RAM
+# percentage is not usable here: with no visible cgroup limit the JVM reports the
+# host's physical memory, which inside a container is several times the real limit.
+if [ -n "${OSCAR_HEAP:-}" ]; then
+    HEAP_OPTS="-Xms${OSCAR_HEAP} -Xmx${OSCAR_HEAP}"
+else
+    MEM_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+        [ -r "$f" ] || continue
+        v=$(cat "$f" 2>/dev/null || echo)
+        case "$v" in ''|max|*[!0-9]*) continue ;; esac
+        v_kb=$((v / 1024))
+        [ "$v_kb" -gt 0 ] && [ "$v_kb" -lt "$MEM_KB" ] && MEM_KB=$v_kb
+    done
+    if [ "$MEM_KB" -gt 0 ]; then
+        MAX_MB=$(( MEM_KB * ${OSCAR_HEAP_MAX_PERCENT:-50} / 100 / 1024 ))
+        MIN_MB=$(( MEM_KB * ${OSCAR_HEAP_INITIAL_PERCENT:-25} / 100 / 1024 ))
+        [ "$MAX_MB" -lt 1024 ] && MAX_MB=1024
+        [ "$MIN_MB" -lt 512 ] && MIN_MB=512
+        HEAP_OPTS="-Xms${MIN_MB}m -Xmx${MAX_MB}m"
+    else
+        HEAP_OPTS="-Xms512m -Xmx2048m"
+    fi
+fi
+
+# JavaCPP extracts native libraries to $HOME/.javacpp/cache, which does not work for
+# a service account with no home directory.
+export HOME="${HOME:-$OSCAR_DATA}"
+
+cd "$NODE_DIR"
+
+exec "$JAVA" $HEAP_OPTS -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC \
+    -XX:+HeapDumpOnOutOfMemoryError \
+    -XX:HeapDumpPath="$LOG_DIR" \
+    -XX:ErrorFile="$LOG_DIR/hs_err_pid%p.log" \
+    -Dorg.bytedeco.javacpp.cachedir="$OSCAR_DATA/javacpp" \
+    -Dlogback.configurationFile="$OSCAR_HOME/logback.xml" \
+    -cp "$OSCAR_HOME/lib/*" \
+    -Djava.system.class.loader="org.sensorhub.utils.NativeClassLoader" \
+    com.botts.impl.security.SensorHubWrapper ./config.json ./db

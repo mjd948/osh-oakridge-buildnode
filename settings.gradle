@@ -58,6 +58,9 @@ include 'sensorhub-comm-mqtt'
 project(':sensorhub-comm-mqtt').projectDir = "$gradle.oshAddonsDir/comm/sensorhub-comm-mqtt" as File
 
 include 'security-utils'
+
+include 'oscarctl'
+project(':oscarctl').projectDir = "$rootDir/packaging/oscarctl" as File
 project(':security-utils').projectDir = "$rootDir/security-utils" as File
 
 // include all folders with build.gradle as subprojects from osh-oakridge-modules

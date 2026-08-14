@@ -1,0 +1,56 @@
+[Unit]
+Description=OSCAR OSH Node
+Documentation=file:/opt/oscar/current/documentation
+Requires=oscar-postgres.service
+After=oscar-postgres.service network-online.target
+PartOf=oscar.target
+
+# Rate limiting lives in [Unit], not [Service]. Placed in [Service] systemd ignores
+# it with only a log line, and the crash-loop backstop silently does nothing.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=oscar
+Group=oscar
+WorkingDirectory=/var/lib/oscar/node
+
+Environment=OSCAR_HOME=/opt/oscar/current
+Environment=OSCAR_CONFIG=/etc/oscar
+Environment=OSCAR_DATA=/var/lib/oscar
+Environment=OSCAR_LOG_DIR=/var/log/oscar
+# JavaCPP extracts native libraries under $HOME; a service account with no home
+# directory would fail to load FFmpeg and ONNX at runtime.
+Environment=HOME=/var/lib/oscar
+EnvironmentFile=-/etc/oscar/oscar.env
+
+# Bounded readiness check over JDBC. Fails the unit rather than hanging if the
+# database never arrives.
+ExecStartPre=/opt/oscar/current/bin/oscarctl wait-db --timeout 180
+ExecStartPre=/opt/oscar/current/bin/oscarctl ensure-extensions
+# Writes config.json on first install only; never touches an existing one.
+ExecStartPre=/opt/oscar/current/bin/oscarctl render-config
+# Refreshes web/, models/, config/, rules/ and documentation/ after an upgrade.
+ExecStartPre=/opt/oscar/current/bin/oscarctl sync-web
+
+ExecStart=/opt/oscar/current/bin/oscar-node
+
+KillSignal=SIGTERM
+KillMode=mixed
+# The node flushes module state and commits outstanding observations on shutdown.
+TimeoutStopSec=120
+
+# Fail visibly instead of thrashing a multi-gigabyte heap forever; the rate limit
+# that enforces this is declared in [Unit] above.
+Restart=on-failure
+RestartSec=15
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/oscar /var/log/oscar
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+description = "OSCAR control and bootstrap tool"
+ext.details = "Prepares and inspects an OSCAR installation: initialises the embedded PostgreSQL " +
+              "cluster, waits for readiness, installs extensions, renders first-run configuration " +
+              "and runs health checks."
+version = '1.0.0'
+
+dependencies {
+    // Both of these are already on the node's runtime classpath. oscarctl.jar is
+    // installed into the same lib/ directory and launched with -cp "lib/*", so it
+    // needs no shading and no dependencies of its own at runtime.
+    compileOnly 'org.postgresql:postgresql:42.7.7'
+    compileOnly project(':security-utils')
+    compileOnly 'org.sensorhub:sensorhub-core:' + oshCoreVersion
+}
+
+test {
+    useJUnit()
+}
