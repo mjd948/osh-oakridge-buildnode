@@ -54,6 +54,27 @@ jobs:
           fi
           echo "deploymentName check passed: $actual"
 
+      # The two checks above cover build.gradle and config.json only. The Electron and
+      # viewer package.json files were never validated, which is how the viewer came to
+      # sit at 3.0.0-alpha while shipping as part of 3.5.0.
+      - name: Check package.json versions match tag
+        run: |
+          tag_version="${{ steps.tag.outputs.version }}"
+          status=0
+          for f in electron/package.json web/oscar-viewer/package.json; do
+            actual=$(grep -oP '"version"\s*:\s*"\K[^"]+' "$f" | head -1)
+            if [ "$actual" != "$tag_version" ]; then
+              echo "::error::$f version ($actual) does not match tag version ($tag_version)"
+              status=1
+            else
+              echo "$f version check passed: $actual"
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Run './gradlew syncVersions' to align every version-bearing file"
+            exit 1
+          fi
+
       - name: Check no pgdata in dist/release/postgis
         run: |
           if [ -d "dist/release/postgis/pgdata" ]; then
