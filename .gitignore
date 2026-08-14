@@ -19,11 +19,23 @@ hivemq-data/
 
 *.log
 
-# test bucket store
-oscar/
-files/
+# test bucket store (runtime directories at the repository root)
+# Anchored with a leading slash: unanchored, "oscar/" matches a path segment at ANY
+# depth, which silently excluded packaging/oscarctl/src/main/java/com/botts/oscar/.
+/oscar/
+/files/
 
 dist/release/postgis/pgdata
 electron/dist/
 .claude/
 electron/node_modules/
+
+# Vendored third-party build inputs (~500 MB of binaries with their own licences)
+packaging/windows/vendor/
+packaging/windows/staging/
+packaging/windows/output/
+packaging/postgres-dist/out/
+
+# ...but the launcher wrappers are source, not build output, and the broad **/bin/
+# rule above would otherwise swallow them.
+!packaging/linux/bin/

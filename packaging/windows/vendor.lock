@@ -1,0 +1,8 @@
+# Pinned third-party build inputs for the OSCAR Windows installer.
+# Regenerate with ./fetch-vendor.sh --update
+# postgresql=16.4-1 postgis=postgis-bundle-pg16-3.4.2x64 winsw=v2.12.0
+# jre=https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/OpenJDK21U-jre_x64_windows_hotspot_21.0.12_8.zip
+b8aa18fef5edb69bee8618f99677d66d0873d22cb40d974c15ac9ffcdecf73ba  jre-win-x64.zip
+bdf95114c067b5d315ae63e9dcdc0700511d09f97759a803c895702a6ef267ff  postgis-bundle-win-x64.zip
+3508d8f085bc3980f38211a82e3f31e5fcae9952105d3dc2f8be67b64a822baa  postgresql-win-x64.zip
+05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da  winsw-x64.exe

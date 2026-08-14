@@ -1,0 +1,62 @@
+<service>
+  <!--
+    WinSW service definition for the OSCAR node.
+
+    The node cannot be registered with sc.exe directly: the Windows Service Control
+    Manager requires a control-message pump, which a bare java.exe does not provide,
+    so the service would fail to start with error 1053. WinSW supplies that pump and
+    adds working-directory control, dependency ordering, restart policy and log
+    rotation as declarative configuration.
+
+    PostgreSQL needs none of this - pg_ctl register writes a proper SCM entry itself,
+    so the database is registered natively and this wrapper is only for the node.
+  -->
+  <id>OSCARNode</id>
+  <name>OSCAR Node</name>
+  <description>OSCAR radiation portal monitoring node (OpenSensorHub).</description>
+
+  <executable>%BASE%\..\bin\oscar-node.bat</executable>
+
+  <!--
+    OSH resolves config.json, db\, files\, web\ and models\ relative to the current
+    directory, so the working directory is the data root rather than the program one.
+  -->
+  <workingdirectory>%ProgramData%\OSCAR\data\node</workingdirectory>
+
+  <env name="OSCAR_HOME" value="%BASE%\.." />
+  <env name="OSCAR_CONFIG" value="%ProgramData%\OSCAR\config" />
+  <env name="OSCAR_DATA" value="%ProgramData%\OSCAR\data" />
+  <env name="OSCAR_LOG_DIR" value="%ProgramData%\OSCAR\logs" />
+
+  <!-- The database must be up before the node, and must outlive a node restart. -->
+  <depend>OSCARPostgres</depend>
+
+  <!--
+    Bounded readiness and first-run setup, mirroring the ExecStartPre chain of the
+    systemd unit on Linux. wait-db exits non-zero on timeout so a database that never
+    arrives fails the service rather than leaving it hanging.
+  -->
+  <prestart executable="%BASE%\oscarctl.bat" arguments="wait-db --timeout 180" />
+  <prestart executable="%BASE%\oscarctl.bat" arguments="ensure-extensions" />
+  <prestart executable="%BASE%\oscarctl.bat" arguments="render-config" />
+  <prestart executable="%BASE%\oscarctl.bat" arguments="sync-web" />
+
+  <onfailure action="restart" delay="15 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <onfailure action="none" />
+  <resetfailure>5 min</resetfailure>
+
+  <!-- The node flushes module state and commits outstanding observations on shutdown. -->
+  <stoptimeout>120 sec</stoptimeout>
+  <stopparentprocessfirst>false</stopparentprocessfirst>
+
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <logpath>%ProgramData%\OSCAR\logs</logpath>
+  <log mode="roll-by-size-time">
+    <sizeThreshold>10240</sizeThreshold>
+    <autoRollAtTime>00:00:00</autoRollAtTime>
+    <keepFiles>14</keepFiles>
+  </log>
+</service>
