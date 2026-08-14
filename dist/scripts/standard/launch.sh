@@ -24,8 +24,16 @@ fi
 
 
 
+# JVM crash dumps go outside the install directory. Without ErrorFile they land in the
+# JVM's working directory (osh-node-oscar) and accumulate there unnoticed.
+CRASH_DUMP_DIR="${OSCAR_CRASH_DUMP_DIR:-/var/log/oscar}"
+mkdir -p "$CRASH_DUMP_DIR"
+# Dumps are named per-PID, so nothing overwrites anything; age them out instead.
+find "$CRASH_DUMP_DIR" -maxdepth 1 -name 'hs_err_pid*.log' -mtime +14 -delete 2>/dev/null || true
+
 # Start the node
 java -Xms6g -Xmx6g -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError \
+	-XX:ErrorFile="$CRASH_DUMP_DIR/hs_err_pid%p.log" \
 	-Dlogback.configurationFile=./logback.xml \
 	-cp "lib/*" \
 	-Djava.system.class.loader="org.sensorhub.utils.NativeClassLoader" \

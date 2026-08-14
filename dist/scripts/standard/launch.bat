@@ -25,8 +25,14 @@ if "%INITIAL_ADMIN_PASSWORD_FILE%"=="" if "%INITIAL_ADMIN_PASSWORD%"=="" (
 REM Call the next batch script to handle setting the initial admin password
 CALL "%SCRIPT_DIR%set-initial-admin-password.bat"
 
+REM JVM crash dumps go outside the install directory. Without ErrorFile they land in the
+REM JVM's working directory and accumulate there unnoticed.
+if "%OSCAR_CRASH_DUMP_DIR%"=="" set "OSCAR_CRASH_DUMP_DIR=%~dp0logs"
+if not exist "%OSCAR_CRASH_DUMP_DIR%" mkdir "%OSCAR_CRASH_DUMP_DIR%"
+
 REM Start the node
 java -Xms6g -Xmx6g -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError ^
+    -XX:ErrorFile="%OSCAR_CRASH_DUMP_DIR%\hs_err_pid%%p.log" ^
     -Dlogback.configurationFile=./logback.xml ^
     -cp "lib/*" ^
     -Djava.system.class.loader="org.sensorhub.utils.NativeClassLoader" ^

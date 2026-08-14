@@ -167,11 +167,12 @@ You can also edit this information in the OSH launch scripts at `osh-node-oscar/
 
 ```shell
 java -Xms6g -Xmx6g -Xss256k -XX:ReservedCodeCacheSize=512m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError \
+	-XX:ErrorFile="$CRASH_DUMP_DIR/hs_err_pid%p.log" \
 	-Dlogback.configurationFile=./logback.xml \
 	-cp "lib/*" \
 	-Djava.system.class.loader="org.sensorhub.utils.NativeClassLoader" \
-	-Djavax.net.ssl.keyStore="./osh-keystore.jks" \
-	-Djavax.net.ssl.keyStorePassword="changeit" \
+	-Djavax.net.ssl.keyStore="./osh-keystore.p12" \
+	-Djavax.net.ssl.keyStorePassword="atakatak" \
 	-Djavax.net.ssl.trustStore="$SCRIPT_DIR/trustStore.jks" \
 	-Djavax.net.ssl.trustStorePassword="changeit" \
 	-Djava.library.path="./nativelibs" \
