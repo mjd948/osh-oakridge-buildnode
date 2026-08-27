@@ -281,6 +281,13 @@ distributions {
                 }
             }
             into('pgsql') { from 'packaging/windows/staging/pgsql' }
+            // The Electron desktop client, unpacked. oscar.iss installs it as the
+            // 'client' component and points its shortcuts at {app}\client\OSCAR.exe.
+            into('client') {
+                from 'packaging/windows/staging/client'
+                fileMode = 0755
+                dirMode = 0755
+            }
             into('bin') { from 'packaging/windows/bin' }
             into('.') {
                 from 'packaging/windows/oscar-node.service.xml'
@@ -372,6 +379,42 @@ def REQUIRED_DIST_SOURCES = [
 // Produced by `npm run build` in web/oscar-viewer; absent on a bare `./gradlew build`.
 // Warn rather than fail so a Java-only build still works locally.
 def GENERATED_DIST_SOURCES = ['web/oscar-viewer/web']
+
+// The same hazard for the Windows installer, which has more third-party inputs than any
+// other distribution and no CI covering it. A missing client/ is what shipped a 3.6.0-rc.1
+// installer whose "Desktop client only" type installed nothing but a licences folder.
+def REQUIRED_WIN_DIST_SOURCES = [
+    'packaging/windows/staging/pgsql':          './packaging/windows/make-pgsql.sh',
+    'packaging/windows/staging/client':         './packaging/windows/make-client.sh',
+    'packaging/windows/staging/client/OSCAR.exe': './packaging/windows/make-client.sh',
+    'packaging/windows/vendor/jre-win-x64.zip': './packaging/windows/fetch-vendor.sh',
+    'packaging/windows/vendor/winsw-x64.exe':   './packaging/windows/fetch-vendor.sh',
+    'packaging/windows/bin':                    '(tracked in git)',
+    // Only a warning for relDistZip, but an installer with no viewer is not worth
+    // compiling for twenty minutes.
+    'web/oscar-viewer/web':                     'npm --prefix web/oscar-viewer run build',
+]
+
+tasks.named('installWinX64Dist') {
+    doFirst {
+        def missing = REQUIRED_WIN_DIST_SOURCES.findAll { path, _producer -> !file(path).exists() }
+        if (!missing.isEmpty()) {
+            throw new GradleException(
+                "Windows installer payload is incomplete and would be silently skipped:\n" +
+                missing.collect { path, producer -> "  ${path}  ->  run ${producer}" }.join('\n'))
+        }
+
+        // checkVersions validates the version in electron/package.json; nothing validated
+        // the version of the tree electron-builder actually produced. A stale win-unpacked
+        // left behind by a failed build is indistinguishable from a good one by inspection.
+        def clientVersion = file('packaging/windows/staging/client/VERSION').text.trim()
+        if (clientVersion != project.version.toString()) {
+            throw new GradleException(
+                "Staged desktop client is ${clientVersion} but this release is ${project.version}. " +
+                "Re-run ./packaging/windows/make-client.sh")
+        }
+    }
+}
 
 tasks.named('relDistZip') {
     doFirst {

@@ -75,10 +75,15 @@ Source: "{#SourceDir}\osh-keystore.p12"; DestDir: "{app}"; Components: server; F
 Source: "{#SourceDir}\VERSION";          DestDir: "{app}"; Components: server; Flags: ignoreversion
 Source: "{#SourceDir}\winsw.exe";        DestDir: "{app}\bin"; DestName: "oscar-node-service.exe"; Components: server; Flags: ignoreversion
 Source: "{#SourceDir}\oscar-node.service.xml"; DestDir: "{app}\bin"; DestName: "oscar-node-service.xml"; Components: server; Flags: ignoreversion
+; Deliberately unconditional - every install type must carry the licences. The client
+; tree brings its own Electron and Chromium notices into {app}\client.
 Source: "{#SourceDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; --- client component -------------------------------------------------------
-Source: "{#SourceDir}\client\*"; DestDir: "{app}\client"; Components: client; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; No skipifsourcedoesntexist: it made a missing client tree compile cleanly into an
+; empty component, which shipped a 3.6.0-rc.1 installer whose "Desktop client only" type
+; installed nothing but this licences folder. ISCC must fail instead.
+Source: "{#SourceDir}\client\*"; DestDir: "{app}\client"; Components: client; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{commonappdata}\OSCAR\config"; Permissions: service-modify
@@ -86,11 +91,11 @@ Name: "{commonappdata}\OSCAR\data";   Permissions: service-modify
 Name: "{commonappdata}\OSCAR\logs";   Permissions: service-modify
 
 [Icons]
-Name: "{group}\OSCAR";                 Filename: "{app}\client\OSCAR.exe"; Components: client
+Name: "{group}\OSCAR";                 Filename: "{app}\client\OSCAR.exe"; WorkingDir: "{app}\client"; Components: client
 Name: "{group}\OSCAR Admin Console";   Filename: "http://localhost:8282/sensorhub/admin"; Components: server
 Name: "{group}\OSCAR Health Check";    Filename: "{app}\bin\oscarctl.bat"; Parameters: "doctor"; Components: server
 Name: "{group}\Uninstall OSCAR";       Filename: "{uninstallexe}"
-Name: "{autodesktop}\OSCAR";           Filename: "{app}\client\OSCAR.exe"; Components: client; Tasks: desktopicon
+Name: "{autodesktop}\OSCAR";           Filename: "{app}\client\OSCAR.exe"; WorkingDir: "{app}\client"; Components: client; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Components: client
@@ -98,15 +103,46 @@ Name: "exposemqtt";  Description: "Allow MQTT connections from the network (port
 
 [Run]
 Filename: "{app}\bin\oscarctl.bat"; Parameters: "doctor"; Components: server; Flags: runhidden waituntilterminated; StatusMsg: "Verifying the installation..."
-Filename: "{app}\client\OSCAR.exe"; Description: "Launch OSCAR"; Components: client; Flags: postinstall nowait skipifsilent
+Filename: "{app}\client\OSCAR.exe"; WorkingDir: "{app}\client"; Description: "Launch OSCAR"; Components: client; Flags: postinstall nowait skipifsilent runasoriginaluser
 
 [Code]
 var
   AdminPasswordPage: TInputQueryWizardPage;
+  NodeAddressPage: TInputQueryWizardPage;
 
 function IsServerSelected: Boolean;
 begin
   Result := WizardIsComponentSelected('server');
+end;
+
+function IsClientSelected: Boolean;
+begin
+  Result := WizardIsComponentSelected('client');
+end;
+
+{ A client installed on its own has to be told where the node is. All-in-one does not:
+  the node is on this machine. }
+function IsClientOnly: Boolean;
+begin
+  Result := IsClientSelected and (not IsServerSelected);
+end;
+
+{ Inno's Pascal Script has no JSON writer, and a password may legitimately contain a
+  quote or a backslash. }
+function JsonEscape(const Value: String): String;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := '';
+  for I := 1 to Length(Value) do
+  begin
+    C := Value[I];
+    if (C = '\') or (C = '"') then
+      Result := Result + '\' + C
+    else
+      Result := Result + C;
+  end;
 end;
 
 { Runs a command and returns its exit code, or -1 if it could not be launched. }
@@ -135,11 +171,32 @@ begin
     'the installation log.');
   AdminPasswordPage.Add('Password:', True);
   AdminPasswordPage.Add('Confirm:', True);
+
+  NodeAddressPage := CreateInputQueryPage(AdminPasswordPage.ID,
+    'OSCAR Node',
+    'Choose the node this client connects to',
+    'The client serves its interface locally and forwards data requests to the node, so' + #13#10 +
+    'this address is used by the application itself rather than typed into a browser.' + #13#10 + #13#10 +
+    'Credentials are optional. Left blank, the client asks you to sign in, but live MQTT' + #13#10 +
+    'streams stay unauthenticated - a browser cannot attach credentials to a WebSocket' + #13#10 +
+    'handshake, so only the application can supply them. Entered here, they are stored in' + #13#10 +
+    'a file that any user of this machine can read.');
+  NodeAddressPage.Add('Address:', False);
+  NodeAddressPage.Add('Port:', False);
+  NodeAddressPage.Add('Username (optional):', False);
+  NodeAddressPage.Add('Password (optional):', True);
+  NodeAddressPage.Values[0] := ExpandConstant('{param:NodeAddress|}');
+  NodeAddressPage.Values[1] := ExpandConstant('{param:NodePort|8282}');
+  NodeAddressPage.Values[2] := ExpandConstant('{param:NodeUser|}');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = AdminPasswordPage.ID) and (not IsServerSelected);
+  Result := False;
+  if PageID = AdminPasswordPage.ID then
+    Result := not IsServerSelected;
+  if PageID = NodeAddressPage.ID then
+    Result := not IsClientOnly;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -150,6 +207,21 @@ begin
     if AdminPasswordPage.Values[0] <> AdminPasswordPage.Values[1] then
     begin
       MsgBox('The passwords do not match.', mbError, MB_OK);
+      Result := False;
+    end;
+  end;
+
+  if (CurPageID = NodeAddressPage.ID) and IsClientOnly then
+  begin
+    if Trim(NodeAddressPage.Values[0]) = '' then
+    begin
+      MsgBox('Enter the address of the OSCAR node this client should connect to.', mbError, MB_OK);
+      Result := False;
+    end
+    else if (StrToIntDef(Trim(NodeAddressPage.Values[1]), 0) <= 0) or
+            (StrToIntDef(Trim(NodeAddressPage.Values[1]), 0) > 65535) then
+    begin
+      MsgBox('The port must be a number between 1 and 65535.', mbError, MB_OK);
       Result := False;
     end;
   end;
@@ -206,6 +278,8 @@ begin
          'Change it after signing in.', mbInformation, MB_OK);
 end;
 
+{ Configures the browser app the NODE serves: oscarctl sync-web copies this into the
+  node's web root. Not read by the desktop client - see WriteClientConfig. }
 procedure WriteViewerConfig;
 var
   ConfigDir, Json: String;
@@ -225,6 +299,89 @@ begin
     '  }' + #13#10 +
     '}' + #13#10;
   SaveStringToFile(ConfigDir + '\viewer-config.json', Json, False);
+end;
+
+{ Configures the DESKTOP CLIENT, which reads oscar-config.json to decide where its
+  built-in proxy forwards data requests.
+
+  Deliberately in ProgramData rather than beside the client's own web assets: the client
+  serves that directory over its local origin, so a node address placed there would be
+  fetched by the interface too, and it would then talk to the node directly instead of
+  through the proxy - losing the single origin, and with it the credential injection that
+  browsers cannot perform on a WebSocket handshake. Nothing here is reachable over HTTP. }
+procedure WriteClientConfig;
+var
+  ConfigDir, ConfigFile, Addr, User, Pass, Json: String;
+  Port: Integer;
+begin
+  ConfigDir := ExpandConstant('{commonappdata}\OSCAR\config');
+  ConfigFile := ConfigDir + '\oscar-config.json';
+
+  { This may be an upgrade; never discard an operator's endpoint. }
+  if FileExists(ConfigFile) then
+    Exit;
+
+  if IsClientOnly then
+  begin
+    Addr := Trim(NodeAddressPage.Values[0]);
+    Port := StrToIntDef(Trim(NodeAddressPage.Values[1]), 8282);
+    User := Trim(NodeAddressPage.Values[2]);
+    Pass := NodeAddressPage.Values[3];
+    if Pass = '' then
+      Pass := ExpandConstant('{param:NodePassword|}');
+
+    { A silent install shows no page. Leave the client unconfigured rather than writing an
+      empty address, which readUpstream would accept in preference to its own default. }
+    if Addr = '' then
+    begin
+      Log('No node address given (/NODEADDRESS=); leaving the client to its default.');
+      Exit;
+    end;
+  end
+  else
+  begin
+    { Installed alongside the node, so it is on this machine. }
+    Addr := 'localhost';
+    Port := 8282;
+    User := '';
+    Pass := '';
+  end;
+
+  Json :=
+    '{' + #13#10 +
+    '  "node": {' + #13#10 +
+    '    "name": "OSCAR Node",' + #13#10 +
+    '    "address": "' + JsonEscape(Addr) + '",' + #13#10 +
+    '    "port": ' + IntToStr(Port) + ',' + #13#10 +
+    '    "oshPathRoot": "/sensorhub",' + #13#10 +
+    '    "csAPIEndpoint": "/api",' + #13#10 +
+    '    "isSecure": false,' + #13#10 +
+    { Written out at their defaults so the two settings that matter for a node behind
+      https are visible in the file an operator already edits, rather than only in the
+      error message that appears once one is needed.
+
+      caFile trusts one certificate in addition to the system roots - the setting for a
+      self-signed node certificate. rejectUnauthorized: false accepts any certificate
+      without checking it, which keeps the traffic encrypted but no longer proves who is
+      on the other end. See the TLS section of electron/proxy.js. }
+    '    "tls": {' + #13#10 +
+    '      "caFile": "",' + #13#10 +
+    '      "rejectUnauthorized": true' + #13#10 +
+    '    }';
+
+  if User <> '' then
+    Json := Json + ',' + #13#10 +
+    '    "auth": {' + #13#10 +
+    '      "username": "' + JsonEscape(User) + '",' + #13#10 +
+    '      "password": "' + JsonEscape(Pass) + '"' + #13#10 +
+    '    }';
+
+  Json := Json + #13#10 +
+    '  }' + #13#10 +
+    '}' + #13#10;
+
+  SaveStringToFile(ConfigFile, Json, False);
+  Log('Wrote desktop client configuration to ' + ConfigFile);
 end;
 
 procedure RegisterServices;
@@ -304,6 +461,8 @@ begin
       RegisterServices;
       AddFirewallRules;
     end;
+    if IsClientSelected then
+      WriteClientConfig;
   end;
 end;
 
@@ -315,6 +474,9 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     App := ExpandConstant('{app}');
+    { The client registers itself for auto-start and sits in the notification area, so
+      its files are locked unless it is stopped first. }
+    RunHidden('taskkill.exe', '/IM OSCAR.exe /F');
     { Node first, so it releases the database before the database goes away. }
     RunHidden('sc.exe', 'stop {#NodeServiceName}');
     RunHidden('sc.exe', 'stop {#PgServiceName}');
