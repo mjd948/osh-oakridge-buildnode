@@ -1,7 +1,7 @@
 const { app, BrowserWindow, dialog, Menu, Tray } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { createServer } = require('./proxy');
+const { createServer, tlsPolicyFromEnv } = require('./proxy');
 
 // Disable all background throttling before app is ready
 app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -28,10 +28,22 @@ function getWebPath() {
  * Read from oscar-config.json - written by the installer, or edited by the operator in
  * the app's own data directory, which takes precedence so an update to the bundled copy
  * cannot override a local choice.
+ *
+ * The machine-wide copy sits in ProgramData rather than next to the bundled web assets
+ * because that directory is this app's own static root: anything in it is fetched by the
+ * interface as well, which would point the interface straight at the node and undo the
+ * single origin this proxy exists to provide. ProgramData is not served, so only the
+ * main process sees it - and it survives per-user profiles, which an elevated installer
+ * cannot write to anyway.
  */
-function readUpstream() {
+function readConfiguredNode() {
+    const machineWide = process.platform === 'win32' && process.env.ProgramData
+        ? [path.join(process.env.ProgramData, 'OSCAR', 'config', 'oscar-config.json')]
+        : [];
+
     const candidates = [
         path.join(app.getPath('userData'), 'oscar-config.json'),
+        ...machineWide,
         path.join(getWebPath(), 'oscar-config.json'),
     ];
 
@@ -41,21 +53,53 @@ function readUpstream() {
             const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
             const node = parsed && parsed.node;
             if (!node || !node.address) continue;
-            return {
-                host: node.address,
-                port: Number(node.port) || 8282,
-                auth: node.auth && node.auth.username
-                    ? `${node.auth.username}:${node.auth.password || ''}`
-                    : null,
-            };
+            return node;
         } catch (err) {
             console.warn(`[config] ignoring ${file}: ${err.message}`);
         }
     }
+    return null;
+}
+
+function readUpstream() {
+    const node = readConfiguredNode();
 
     // Nothing configured yet: assume a node on this machine. The Servers page lets the
     // user change it, and the proxy re-reads this on every request.
-    return { host: 'localhost', port: 8282, auth: null };
+    if (!node) return { host: 'localhost', port: 8282, secure: false, auth: null };
+
+    const secure = node.isSecure === true;
+    return {
+        host: node.address,
+        port: Number(node.port) || (secure ? 443 : 8282),
+        secure,
+        auth: node.auth && node.auth.username
+            ? `${node.auth.username}:${node.auth.password || ''}`
+            : null,
+    };
+}
+
+/**
+ * How this client judges an https node's certificate. See the TLS section of proxy.js for
+ * what the two settings mean and which one to reach for.
+ *
+ * Read once at startup, unlike the node address: it decides how the TLS agent is built, so
+ * a change to it takes a restart. It lives in oscar-config.json beside the node it applies
+ * to, because an app launched from a shortcut inherits no useful environment; the
+ * variables are for a terminal and for the packaging tests, and win over the file so a
+ * machine can be tested without editing its configuration.
+ *
+ * Only an explicit `false` relaxes verification. A missing or malformed value leaves it on.
+ */
+function readTlsPolicy() {
+    const node = readConfiguredNode();
+    const configured = (node && node.tls) || {};
+    const fromEnv = tlsPolicyFromEnv();
+
+    return {
+        rejectUnauthorized: configured.rejectUnauthorized !== false && fromEnv.rejectUnauthorized,
+        caFile: fromEnv.caFile || configured.caFile || null,
+    };
 }
 
 function startServer(callback) {
@@ -63,6 +107,7 @@ function startServer(callback) {
         staticRoot: getWebPath(),
         // Read lazily so editing the config file takes effect without a restart.
         getUpstream: readUpstream,
+        tlsPolicy: readTlsPolicy(),
     });
 
     server.on('error', (err) => {
@@ -104,11 +149,21 @@ function createWindow() {
         mainWindow.maximize();
     });
 
-    // Ctrl+R / F5 — reload after changing the configured node
+    // Ctrl+R / F5 — reload after changing the configured node.
+    //
+    // F12 / Ctrl+Shift+I — devtools. Registered explicitly because setApplicationMenu(null)
+    // removes the default menu, and with it the accelerators Chromium would otherwise
+    // provide: without this there is no way to see a failing request from inside a
+    // packaged build, which is the only place several of these problems appear.
     mainWindow.webContents.on('before-input-event', (_event, input) => {
-        if (input.type === 'keyDown' &&
-            (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r'))) {
+        if (input.type !== 'keyDown') return;
+        const key = input.key.toLowerCase();
+
+        if (input.key === 'F5' || (input.control && key === 'r')) {
             mainWindow.webContents.reload();
+        }
+        if (input.key === 'F12' || (input.control && input.shift && key === 'i')) {
+            mainWindow.webContents.toggleDevTools();
         }
     });
 
